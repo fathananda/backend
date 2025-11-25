@@ -56,103 +56,174 @@ const db = new sqlite3.Database('./absensi.db', (err) => {
 });
 
 // Initialize database tables
+// Initialize database tables
 function initDatabase() {
-  db.run(`CREATE TABLE IF NOT EXISTS mahasiswa (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    nama TEXT NOT NULL,
-    nim TEXT UNIQUE NOT NULL,
-    password TEXT NOT NULL,
-    role TEXT DEFAULT 'mahasiswa',
-    gaji_pokok REAL DEFAULT 5690752,
-    tunjangan_hadir REAL DEFAULT 50000,
-    potongan_telat_sedang REAL DEFAULT 25000,
-    potongan_telat_berat REAL DEFAULT 50000,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  )`);
+  // Gunakan db.serialize() untuk memastikan query dijalankan berurutan
+  db.serialize(() => {
+    // 1. CREATE TABLE mahasiswa
+    db.run(`CREATE TABLE IF NOT EXISTS mahasiswa (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      nama TEXT NOT NULL,
+      nim TEXT UNIQUE NOT NULL,
+      password TEXT NOT NULL,
+      role TEXT DEFAULT 'mahasiswa',
+      gaji_pokok REAL DEFAULT 5690752,
+      tunjangan_hadir REAL DEFAULT 50000,
+      potongan_telat_sedang REAL DEFAULT 25000,
+      potongan_telat_berat REAL DEFAULT 50000,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`, (err) => {
+      if (err) console.error('Error creating mahasiswa table:', err);
+      else console.log('✓ Table mahasiswa ready');
+    });
 
-  db.run(`CREATE TABLE IF NOT EXISTS absensi (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    mahasiswa_id INTEGER NOT NULL,
-    tanggal DATETIME NOT NULL,
-    jam_seharusnya TIME NOT NULL,
-    jam_masuk_aktual TIME NOT NULL,
-    keterlambatan_menit INTEGER DEFAULT 0,
-    kategori_keterlambatan TEXT,
-    sanksi TEXT,
-    latitude REAL NOT NULL,
-    longitude REAL NOT NULL,
-    jarak_dari_kantor REAL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (mahasiswa_id) REFERENCES mahasiswa(id)
-  )`);
+    // 2. CREATE TABLE absensi
+    db.run(`CREATE TABLE IF NOT EXISTS absensi (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      mahasiswa_id INTEGER NOT NULL,
+      tanggal DATETIME NOT NULL,
+      jam_seharusnya TIME NOT NULL,
+      jam_masuk_aktual TIME NOT NULL,
+      keterlambatan_menit INTEGER DEFAULT 0,
+      kategori_keterlambatan TEXT,
+      sanksi TEXT,
+      latitude REAL NOT NULL,
+      longitude REAL NOT NULL,
+      jarak_dari_kantor REAL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (mahasiswa_id) REFERENCES mahasiswa(id)
+    )`, (err) => {
+      if (err) console.error('Error creating absensi table:', err);
+      else console.log('✓ Table absensi ready');
+    });
 
-    // NEW: Tabel kalender
-  db.run(`CREATE TABLE IF NOT EXISTS kalender (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    tanggal DATE NOT NULL,
-    jenis TEXT NOT NULL,
-    keterangan TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  )`);
+    // 3. CREATE TABLE kalender
+    db.run(`CREATE TABLE IF NOT EXISTS kalender (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tanggal DATE NOT NULL,
+      jenis TEXT NOT NULL,
+      keterangan TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`, (err) => {
+      if (err) console.error('Error creating kalender table:', err);
+      else console.log('✓ Table kalender ready');
+    });
 
-  // NEW: Tabel pengajuan
-  db.run(`CREATE TABLE IF NOT EXISTS pengajuan (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    mahasiswa_id INTEGER NOT NULL,
-    jenis TEXT NOT NULL,
-    tanggal_mulai DATE NOT NULL,
-    tanggal_selesai DATE NOT NULL,
-    keterangan TEXT,
-    foto_bukti TEXT,
-    status TEXT DEFAULT 'pending',
-    alasan_ditolak TEXT,
-    diproses_oleh INTEGER,
-    diproses_pada DATETIME,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (mahasiswa_id) REFERENCES mahasiswa(id),
-    FOREIGN KEY (diproses_oleh) REFERENCES mahasiswa(id)
-  )`);
+    // 4. CREATE TABLE pengajuan
+    db.run(`CREATE TABLE IF NOT EXISTS pengajuan (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      mahasiswa_id INTEGER NOT NULL,
+      jenis TEXT NOT NULL,
+      tanggal_mulai DATE NOT NULL,
+      tanggal_selesai DATE NOT NULL,
+      keterangan TEXT,
+      foto_bukti TEXT,
+      status TEXT DEFAULT 'pending',
+      alasan_ditolak TEXT,
+      diproses_oleh INTEGER,
+      diproses_pada DATETIME,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (mahasiswa_id) REFERENCES mahasiswa(id),
+      FOREIGN KEY (diproses_oleh) REFERENCES mahasiswa(id)
+    )`, (err) => {
+      if (err) console.error('Error creating pengajuan table:', err);
+      else console.log('✓ Table pengajuan ready');
+    });
 
+    // 5. CREATE TABLE konfigurasi
+    db.run(`CREATE TABLE IF NOT EXISTS konfigurasi (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      nama TEXT UNIQUE NOT NULL,
+      nilai TEXT NOT NULL
+    )`, (err) => {
+      if (err) console.error('Error creating konfigurasi table:', err);
+      else console.log('✓ Table konfigurasi ready');
+    });
 
-  // Konfigurasi
-  db.run(`CREATE TABLE IF NOT EXISTS konfigurasi (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    nama TEXT UNIQUE NOT NULL,
-    nilai TEXT NOT NULL
-  )`);
+    // 6. INSERT default konfigurasi
+    const defaultConfig = [
+      { nama: 'jam_masuk_default', nilai: '08:00' },
+      { nama: 'kantor_latitude', nilai: '-6.360427' },
+      { nama: 'kantor_longitude', nilai: '107.095709' },
+      { nama: 'kantor_nama', nilai: 'SMK Al-Luthfah - Villa Mutiara Cikarang' },
+      { nama: 'radius_maksimal', nilai: '1000' }
+    ];
 
-  // Insert konfigurasi default
-  const defaultConfig = [
-    { nama: 'jam_masuk_default', nilai: '08:00' },
-    { nama: 'kantor_latitude', nilai: '-6.360427' },
-    { nama: 'kantor_longitude', nilai: '107.095709' },
-    { nama: 'kantor_nama', nilai: 'SMK Al-Luthfah - Villa Mutiara Cikarang' },
-    { nama: 'radius_maksimal', nilai: '1000' } // dalam meter
-  ];
+    defaultConfig.forEach(config => {
+      db.get("SELECT * FROM konfigurasi WHERE nama = ?", [config.nama], (err, row) => {
+        if (err) {
+          console.error('Error checking konfigurasi:', err);
+          return;
+        }
+        if (!row) {
+          db.run("INSERT INTO konfigurasi (nama, nilai) VALUES (?, ?)", [config.nama, config.nilai], (err) => {
+            if (err) console.error('Error inserting konfigurasi:', err);
+          });
+        }
+      });
+    });
 
-  defaultConfig.forEach(config => {
-    db.get("SELECT * FROM konfigurasi WHERE nama = ?", [config.nama], (err, row) => {
+    // 7. CREATE admin account
+    db.get("SELECT * FROM mahasiswa WHERE nim = 'admin'", (err, row) => {
+      if (err) {
+        console.error('Error checking admin:', err);
+        return;
+      }
+      
       if (!row) {
-        db.run("INSERT INTO konfigurasi (nama, nilai) VALUES (?, ?)", [config.nama, config.nilai]);
+        bcrypt.hash('admin123', 10, (err, hash) => {
+          if (err) {
+            console.error('❌ Error hashing password admin:', err);
+            return;
+          }
+          
+          db.run(
+            `INSERT INTO mahasiswa (nama, nim, password, role, gaji_pokok, tunjangan_hadir, potongan_telat_sedang, potongan_telat_berat) 
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            ['Administrator', 'admin', hash, 'admin', 0, 0, 0, 0],
+            (err) => {
+              if (err) {
+                console.error('❌ Error creating admin:', err);
+              } else {
+                console.log('\n=== AKUN ADMIN BERHASIL DIBUAT ===');
+                console.log('NIM: admin');
+                console.log('Password: admin123');
+                console.log('===================================\n');
+              }
+            }
+          );
+        });
+      } else {
+        console.log('✓ Akun admin sudah ada');
       }
     });
-  });
 
-  const today = new Date();
-  const nextWeek = new Date(today.getTime() + 7 * 24 * 60 * 60 * 1000);
-  
-  db.get("SELECT COUNT(*) as count FROM kalender", (err, row) => {
-    if (!err && row.count === 0) {
-      const sampleEvents = [
-        { tanggal: nextWeek.toISOString().split('T')[0], jenis: 'libur', keterangan: 'Libur Nasional' },
-        { tanggal: new Date(today.getTime() + 14 * 24 * 60 * 60 * 1000).toISOString().split('T')[0], jenis: 'ujian', keterangan: 'Ujian Tengah Semester' }
-      ];
+    // 8. INSERT sample kalender
+    const today = new Date();
+    const nextWeek = new Date(today.getTime() + 7 * 24 * 60 * 60 * 1000);
+    
+    db.get("SELECT COUNT(*) as count FROM kalender", (err, row) => {
+      if (err) {
+        console.error('Error checking kalender:', err);
+        return;
+      }
       
-      sampleEvents.forEach(event => {
-        db.run("INSERT INTO kalender (tanggal, jenis, keterangan) VALUES (?, ?, ?)", 
-          [event.tanggal, event.jenis, event.keterangan]);
-      });
-    }
+      if (row && row.count === 0) {
+        const sampleEvents = [
+          { tanggal: nextWeek.toISOString().split('T')[0], jenis: 'libur', keterangan: 'Libur Nasional' },
+          { tanggal: new Date(today.getTime() + 14 * 24 * 60 * 60 * 1000).toISOString().split('T')[0], jenis: 'ujian', keterangan: 'Ujian Tengah Semester' }
+        ];
+        
+        sampleEvents.forEach(event => {
+          db.run("INSERT INTO kalender (tanggal, jenis, keterangan) VALUES (?, ?, ?)", 
+            [event.tanggal, event.jenis, event.keterangan],
+            (err) => {
+              if (err) console.error('Error inserting kalender:', err);
+            }
+          );
+        });
+      }
+    });
   });
 }
 
@@ -421,11 +492,14 @@ function verifyToken(req, res, next) {
       return res.status(401).json({ message: 'Token tidak valid' });
     }
     req.userId = decoded.id;
+    req.userRole = decoded.role;
+    console.log('User ID:', decoded.id, 'Role:', decoded.role);
     next();
   });
 }
 
 function verifyAdmin(req, res, next) {
+  console.log('Checking admin access, userRole:', req.userRole);
   if (req.userRole !== 'admin') {
     return res.status(403).json({ message: 'Akses ditolak. Hanya admin.' });
   }
@@ -496,7 +570,7 @@ app.post('/login', (req, res) => {
       return res.status(401).json({ message: 'NIM atau password salah' });
     }
 
-    const token = jwt.sign({ id: user.id, nim: user.nim }, SECRET_KEY, {
+    const token = jwt.sign({ id: user.id, nim: user.nim, role: user.role || 'mahasiswa' }, SECRET_KEY, {
       expiresIn: '7d'
     });
 
@@ -506,7 +580,8 @@ app.post('/login', (req, res) => {
       data: {
         id: user.id,
         nama: user.nama,
-        nim: user.nim
+        nim: user.nim,
+        role: user.role || 'mahasiswa'
       }
     });
   });
@@ -528,6 +603,208 @@ app.get('/cek-absen-hari-ini/:mahasiswa_id', verifyToken, (req, res) => {
     });
   });
 });
+
+app.get('/admin/dashboard', verifyToken, verifyAdmin, (req, res) => {
+  const today = new Date().toISOString().split('T')[0];
+  const thisMonth = new Date().toISOString().slice(0, 7);
+
+  db.get('SELECT COUNT(*) as total FROM mahasiswa WHERE role = "mahasiswa"', [], (err, totalGuru) => {
+    if (err) return res.status(500).json({ message: 'Error' });
+
+    db.get('SELECT COUNT(*) as total FROM absensi WHERE DATE(tanggal) = ?', [today], (err, absenHariIni) => {
+      if (err) return res.status(500).json({ message: 'Error' });
+
+      db.get('SELECT COUNT(*) as total FROM pengajuan WHERE status = "pending"', [], (err, pengajuanPending) => {
+        if (err) return res.status(500).json({ message: 'Error' });
+
+        db.get(`SELECT COUNT(*) as total FROM absensi 
+                WHERE strftime('%Y-%m', tanggal) = ? 
+                AND keterlambatan_menit > 0`, [thisMonth], (err, telatBulanIni) => {
+          if (err) return res.status(500).json({ message: 'Error' });
+
+          res.json({
+            message: 'Dashboard admin',
+            data: {
+              total_guru: totalGuru.total,
+              absen_hari_ini: absenHariIni.total,
+              pengajuan_pending: pengajuanPending.total,
+              telat_bulan_ini: telatBulanIni.total
+            }
+          });
+        });
+      });
+    });
+  });
+});
+
+// GET /admin/guru - Daftar semua guru
+app.get('/admin/guru', verifyToken, verifyAdmin, (req, res) => {
+  db.all(`SELECT id, nama, nim, role, gaji_pokok, tunjangan_hadir, 
+          potongan_telat_sedang, potongan_telat_berat, created_at 
+          FROM mahasiswa WHERE role = "mahasiswa" ORDER BY nama ASC`, [], (err, rows) => {
+    if (err) return res.status(500).json({ message: 'Error mengambil data guru' });
+    res.json({ message: 'Daftar guru', data: rows });
+  });
+});
+
+// GET /admin/guru/:id - Detail guru
+app.get('/admin/guru/:id', verifyToken, verifyAdmin, (req, res) => {
+  const { id } = req.params;
+  
+  db.get('SELECT * FROM mahasiswa WHERE id = ?', [id], (err, guru) => {
+    if (err) return res.status(500).json({ message: 'Error' });
+    if (!guru) return res.status(404).json({ message: 'Guru tidak ditemukan' });
+    
+    res.json({ message: 'Detail guru', data: guru });
+  });
+});
+
+// PUT /admin/guru/:id - Update data guru
+app.put('/admin/guru/:id', verifyToken, verifyAdmin, (req, res) => {
+  const { id } = req.params;
+  const { nama, nim, gaji_pokok, tunjangan_hadir, potongan_telat_sedang, potongan_telat_berat } = req.body;
+  
+  db.run(
+    `UPDATE mahasiswa SET nama = ?, nim = ?, gaji_pokok = ?, 
+     tunjangan_hadir = ?, potongan_telat_sedang = ?, potongan_telat_berat = ?
+     WHERE id = ?`,
+    [nama, nim, gaji_pokok, tunjangan_hadir, potongan_telat_sedang, potongan_telat_berat, id],
+    function(err) {
+      if (err) {
+        if (err.message.includes('UNIQUE constraint failed')) {
+          return res.status(400).json({ message: 'NIM sudah digunakan' });
+        }
+        return res.status(500).json({ message: 'Error update guru' });
+      }
+      res.json({ message: 'Data guru berhasil diupdate' });
+    }
+  );
+});
+
+// DELETE /admin/guru/:id - Hapus guru
+app.delete('/admin/guru/:id', verifyToken, verifyAdmin, (req, res) => {
+  const { id } = req.params;
+  
+  // Hapus data terkait dulu
+  db.run('DELETE FROM absensi WHERE mahasiswa_id = ?', [id], (err) => {
+    if (err) return res.status(500).json({ message: 'Error' });
+    
+    db.run('DELETE FROM pengajuan WHERE mahasiswa_id = ?', [id], (err) => {
+      if (err) return res.status(500).json({ message: 'Error' });
+      
+      db.run('DELETE FROM mahasiswa WHERE id = ?', [id], function(err) {
+        if (err) return res.status(500).json({ message: 'Error hapus guru' });
+        res.json({ message: 'Guru berhasil dihapus' });
+      });
+    });
+  });
+});
+
+// GET /admin/absensi - Semua absensi dengan filter
+app.get('/admin/absensi', verifyToken, verifyAdmin, (req, res) => {
+  const { tanggal, mahasiswa_id } = req.query;
+  
+  let query = `SELECT a.*, m.nama, m.nim 
+               FROM absensi a 
+               JOIN mahasiswa m ON a.mahasiswa_id = m.id WHERE 1=1`;
+  const params = [];
+  
+  if (tanggal) {
+    query += ' AND DATE(a.tanggal) = ?';
+    params.push(tanggal);
+  }
+  
+  if (mahasiswa_id) {
+    query += ' AND a.mahasiswa_id = ?';
+    params.push(mahasiswa_id);
+  }
+  
+  query += ' ORDER BY a.tanggal DESC LIMIT 100';
+  
+  db.all(query, params, (err, rows) => {
+    if (err) return res.status(500).json({ message: 'Error' });
+    res.json({ message: 'Data absensi', data: rows });
+  });
+});
+
+// GET /admin/laporan/kehadiran - Laporan kehadiran per guru
+app.get('/admin/laporan/kehadiran', verifyToken, verifyAdmin, (req, res) => {
+  const { bulan, tahun } = req.query;
+  const now = new Date();
+  const targetBulan = bulan || (now.getMonth() + 1);
+  const targetTahun = tahun || now.getFullYear();
+  
+  const startDate = `${targetTahun}-${String(targetBulan).padStart(2, '0')}-01`;
+  const endDate = `${targetTahun}-${String(targetBulan).padStart(2, '0')}-31`;
+  
+  db.all(`SELECT 
+            m.id, m.nama, m.nim,
+            COUNT(a.id) as total_hadir,
+            SUM(CASE WHEN a.kategori_keterlambatan = 'Tepat Waktu' THEN 1 ELSE 0 END) as tepat_waktu,
+            SUM(CASE WHEN a.kategori_keterlambatan = 'Telat Ringan' THEN 1 ELSE 0 END) as telat_ringan,
+            SUM(CASE WHEN a.kategori_keterlambatan = 'Telat Sedang' THEN 1 ELSE 0 END) as telat_sedang,
+            SUM(CASE WHEN a.kategori_keterlambatan = 'Telat Berat' THEN 1 ELSE 0 END) as telat_berat
+          FROM mahasiswa m
+          LEFT JOIN absensi a ON m.id = a.mahasiswa_id 
+            AND DATE(a.tanggal) BETWEEN ? AND ?
+          WHERE m.role = 'mahasiswa'
+          GROUP BY m.id, m.nama, m.nim
+          ORDER BY m.nama`, [startDate, endDate], (err, rows) => {
+    if (err) return res.status(500).json({ message: 'Error' });
+    res.json({ 
+      message: 'Laporan kehadiran',
+      periode: `${getNamaBulan(targetBulan)} ${targetTahun}`,
+      data: rows 
+    });
+  });
+});
+
+// GET /admin/pengajuan/pending - Pengajuan yang perlu diproses
+app.get('/admin/pengajuan/pending', verifyToken, verifyAdmin, (req, res) => {
+  db.all(`SELECT p.*, m.nama, m.nim 
+          FROM pengajuan p 
+          JOIN mahasiswa m ON p.mahasiswa_id = m.id 
+          WHERE p.status = 'pending' 
+          ORDER BY p.created_at ASC`, [], (err, rows) => {
+    if (err) return res.status(500).json({ message: 'Error' });
+    res.json({ message: 'Pengajuan pending', data: rows });
+  });
+});
+
+// POST /admin/create-guru - Buat akun guru baru (admin only)
+app.post('/admin/create-guru', verifyToken, verifyAdmin, async (req, res) => {
+  const { nama, nim, password, gaji_pokok, tunjangan_hadir } = req.body;
+  
+  if (!nama || !nim || !password) {
+    return res.status(400).json({ message: 'Data tidak lengkap' });
+  }
+  
+  try {
+    const hashedPassword = await bcrypt.hash(password, 10);
+    
+    db.run(
+      `INSERT INTO mahasiswa (nama, nim, password, role, gaji_pokok, tunjangan_hadir) 
+       VALUES (?, ?, ?, 'mahasiswa', ?, ?)`,
+      [nama, nim, hashedPassword, gaji_pokok || 5690752, tunjangan_hadir || 50000],
+      function(err) {
+        if (err) {
+          if (err.message.includes('UNIQUE constraint failed')) {
+            return res.status(400).json({ message: 'NIM sudah terdaftar' });
+          }
+          return res.status(500).json({ message: 'Error membuat akun' });
+        }
+        
+        res.status(201).json({
+          message: 'Akun guru berhasil dibuat',
+          data: { id: this.lastID, nama, nim }
+        });
+      }
+    );
+  } catch (error) {
+    res.status(500).json({ message: 'Error server' });
+  }
+});
+
 
 // POST /presensi (UPDATED dengan validasi lokasi)
 app.post('/presensi', verifyToken, (req, res) => {
@@ -660,7 +937,7 @@ app.get('/riwayat/:id_mahasiswa', verifyToken, (req, res) => {
   );
 });
 
-app.get('/kalender', verifyToken, (req, res) => {
+app.get('/kalender', verifyToken, verifyAdmin, (req, res) => {
   const { bulan, tahun } = req.query;
   
   let query = 'SELECT * FROM kalender';
@@ -906,27 +1183,31 @@ app.put('/konfigurasi', verifyToken, (req, res) => {
 });
 
 // DELETE /mahasiswa/:id  → hapus akun berdasarkan ID
-app.delete('/mahasiswa/:id', verifyToken, (req, res) => {
+app.delete('/mahasiswa/:id', verifyToken, verifyAdmin, (req, res) => {
   const { id } = req.params;
 
-  // Hapus absensi terlebih dahulu (foreign key)
   db.run(`DELETE FROM absensi WHERE mahasiswa_id = ?`, [id], function(err) {
     if (err) {
       return res.status(500).json({ message: 'Gagal menghapus data absensi' });
     }
 
-    // Baru hapus akun mahasiswa
-    db.run(`DELETE FROM mahasiswa WHERE id = ?`, [id], function(err) {
+    db.run(`DELETE FROM pengajuan WHERE mahasiswa_id = ?`, [id], function(err) {
       if (err) {
-        return res.status(500).json({ message: 'Gagal menghapus akun mahasiswa' });
+        return res.status(500).json({ message: 'Gagal menghapus data pengajuan' });
       }
 
-      if (this.changes === 0) {
-        return res.status(404).json({ message: 'Akun tidak ditemukan' });
-      }
+      db.run(`DELETE FROM mahasiswa WHERE id = ?`, [id], function(err) {
+        if (err) {
+          return res.status(500).json({ message: 'Gagal menghapus akun mahasiswa' });
+        }
 
-      return res.json({
-        message: `Akun mahasiswa dengan ID ${id} berhasil dihapus`
+        if (this.changes === 0) {
+          return res.status(404).json({ message: 'Akun tidak ditemukan' });
+        }
+
+        return res.json({
+          message: `Akun mahasiswa dengan ID ${id} berhasil dihapus`
+        });
       });
     });
   });
