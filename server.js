@@ -937,7 +937,7 @@ app.get('/riwayat/:id_mahasiswa', verifyToken, (req, res) => {
   );
 });
 
-app.get('/kalender', verifyToken, verifyAdmin, (req, res) => {
+app.get('/kalender', verifyToken, (req, res) => {
   const { bulan, tahun } = req.query;
   
   let query = 'SELECT * FROM kalender';
