@@ -19,8 +19,7 @@ app.use(express.json());
 app.use('/uploads', express.static('uploads'));
 
 // ===========================
-// [REVISI] RATE LIMITER - Mencegah brute force attack pada endpoint login
-// Menyimpan percobaan login gagal per IP di memory
+// RATE LIMITER - Mencegah brute force attack pada endpoint login
 // ===========================
 const loginAttempts = new Map(); // key: IP, value: { count, blockedUntil }
 const MAX_LOGIN_ATTEMPTS = 5;
@@ -45,7 +44,6 @@ function recordLoginFailed(ip) {
   const now = Date.now();
   const record = loginAttempts.get(ip) || { count: 0, blockedUntil: null };
 
-  // Reset jika blokir sudah expired
   if (record.blockedUntil && now >= record.blockedUntil) {
     record.count = 0;
     record.blockedUntil = null;
@@ -60,7 +58,7 @@ function recordLoginFailed(ip) {
 }
 
 function recordLoginSuccess(ip) {
-  loginAttempts.delete(ip); // Reset setelah berhasil login
+  loginAttempts.delete(ip);
 }
 
 // ===========================
@@ -112,17 +110,15 @@ function initDatabase() {
   db.serialize(() => {
 
     // ------------------------------------------
-    // 1. TABEL MAHASISWA (GURU/STAF)
-    // [REVISI] Tambah kolom: email (menggantikan NIP sebagai login identifier),
-    //          email_verified, last_login, device_id (untuk device binding)
+    // 1. TABEL GURU
     // ------------------------------------------
-    db.run(`CREATE TABLE IF NOT EXISTS mahasiswa (
+    db.run(`CREATE TABLE IF NOT EXISTS guru (
       id                    INTEGER PRIMARY KEY AUTOINCREMENT,
       nama                  TEXT    NOT NULL,
       nip                   TEXT    UNIQUE,
       email                 TEXT    UNIQUE NOT NULL,
       password              TEXT    NOT NULL,
-      role                  TEXT    DEFAULT 'mahasiswa',
+      role                  TEXT    DEFAULT 'guru',
       gaji_pokok            REAL    DEFAULT 5690752,
       tunjangan_hadir       REAL    DEFAULT 50000,
       potongan_telat_sedang REAL    DEFAULT 25000,
@@ -132,19 +128,16 @@ function initDatabase() {
       device_id             TEXT,
       created_at            DATETIME DEFAULT CURRENT_TIMESTAMP
     )`, (err) => {
-      if (err) console.error('Error creating mahasiswa table:', err);
-      else console.log('✓ Table mahasiswa ready');
+      if (err) console.error('Error creating guru table:', err);
+      else console.log('✓ Table guru ready');
     });
 
     // ------------------------------------------
     // 2. TABEL ABSENSI
-    // [REVISI] Tambah kolom: is_fake_gps_suspected, gps_accuracy,
-    //          network_latitude, network_longitude, device_id,
-    //          sync_status (untuk mendukung offline sync)
     // ------------------------------------------
     db.run(`CREATE TABLE IF NOT EXISTS absensi (
       id                       INTEGER PRIMARY KEY AUTOINCREMENT,
-      mahasiswa_id             INTEGER NOT NULL,
+      guru_id                  INTEGER NOT NULL,
       tanggal                  DATETIME NOT NULL,
       jam_seharusnya           TIME NOT NULL,
       jam_masuk_aktual         TIME NOT NULL,
@@ -162,7 +155,7 @@ function initDatabase() {
       device_id                TEXT,
       sync_status              TEXT DEFAULT 'online',
       created_at               DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (mahasiswa_id) REFERENCES mahasiswa(id)
+      FOREIGN KEY (guru_id) REFERENCES guru(id)
     )`, (err) => {
       if (err) console.error('Error creating absensi table:', err);
       else console.log('✓ Table absensi ready');
@@ -187,7 +180,7 @@ function initDatabase() {
     // ------------------------------------------
     db.run(`CREATE TABLE IF NOT EXISTS pengajuan (
       id               INTEGER PRIMARY KEY AUTOINCREMENT,
-      mahasiswa_id     INTEGER NOT NULL,
+      guru_id          INTEGER NOT NULL,
       jenis            TEXT    NOT NULL,
       tanggal_mulai    DATE    NOT NULL,
       tanggal_selesai  DATE    NOT NULL,
@@ -198,8 +191,8 @@ function initDatabase() {
       diproses_oleh    INTEGER,
       diproses_pada    DATETIME,
       created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (mahasiswa_id) REFERENCES mahasiswa(id),
-      FOREIGN KEY (diproses_oleh) REFERENCES mahasiswa(id)
+      FOREIGN KEY (guru_id) REFERENCES guru(id),
+      FOREIGN KEY (diproses_oleh) REFERENCES guru(id)
     )`, (err) => {
       if (err) console.error('Error creating pengajuan table:', err);
       else console.log('✓ Table pengajuan ready');
@@ -218,31 +211,28 @@ function initDatabase() {
     });
 
     // ------------------------------------------
-    // [REVISI] 6. TABEL OFFLINE SYNC QUEUE
-    // Menyimpan data presensi yang dilakukan saat offline
-    // Client Android menyimpan ke tabel ini, server memprosesnya saat sync
+    // 6. TABEL OFFLINE SYNC QUEUE
     // ------------------------------------------
     db.run(`CREATE TABLE IF NOT EXISTS offline_sync_queue (
       id              INTEGER PRIMARY KEY AUTOINCREMENT,
-      mahasiswa_id    INTEGER NOT NULL,
+      guru_id         INTEGER NOT NULL,
       payload         TEXT    NOT NULL,
       submitted_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
       synced_at       DATETIME,
       status          TEXT    DEFAULT 'pending',
       rejection_reason TEXT,
-      FOREIGN KEY (mahasiswa_id) REFERENCES mahasiswa(id)
+      FOREIGN KEY (guru_id) REFERENCES guru(id)
     )`, (err) => {
       if (err) console.error('Error creating offline_sync_queue table:', err);
       else console.log('✓ Table offline_sync_queue ready');
     });
 
     // ------------------------------------------
-    // [REVISI] 7. TABEL SECURITY LOG
-    // Mencatat aktivitas mencurigakan: fake GPS, multi-device login, dll.
+    // 7. TABEL SECURITY LOG
     // ------------------------------------------
     db.run(`CREATE TABLE IF NOT EXISTS security_log (
       id           INTEGER PRIMARY KEY AUTOINCREMENT,
-      mahasiswa_id INTEGER,
+      guru_id      INTEGER,
       event_type   TEXT    NOT NULL,
       detail       TEXT,
       ip_address   TEXT,
@@ -255,17 +245,16 @@ function initDatabase() {
 
     // ------------------------------------------
     // 8. INSERT DEFAULT KONFIGURASI
-    // [REVISI] radius_maksimal diubah dari 1000 → 100 meter (sesuai dokumen)
     // ------------------------------------------
     const defaultConfig = [
       { nama: 'jam_masuk_default',  nilai: '08:00' },
       { nama: 'kantor_latitude',    nilai: '-6.360427' },
       { nama: 'kantor_longitude',   nilai: '107.095709' },
       { nama: 'kantor_nama',        nilai: 'SMK Al-Luthfah - Villa Mutiara Cikarang' },
-      { nama: 'radius_maksimal',    nilai: '100' },     // [REVISI] 1000 → 100 meter
-      { nama: 'potongan_alpa',      nilai: '100000' },  // [REVISI] tambah config potongan alfa
-      { nama: 'max_gps_accuracy',   nilai: '50' },      // [REVISI] batas akurasi GPS maks 50m
-      { nama: 'offline_max_delay',  nilai: '300' }      // [REVISI] batas toleransi offline sync: 5 menit
+      { nama: 'radius_maksimal',    nilai: '100' },
+      { nama: 'potongan_alpa',      nilai: '100000' },
+      { nama: 'max_gps_accuracy',   nilai: '50' },
+      { nama: 'offline_max_delay',  nilai: '300' }
     ];
 
     defaultConfig.forEach(config => {
@@ -279,14 +268,13 @@ function initDatabase() {
 
     // ------------------------------------------
     // 9. BUAT AKUN ADMIN DEFAULT
-    // [REVISI] Admin sekarang punya email, login via email
     // ------------------------------------------
-    db.get("SELECT * FROM mahasiswa WHERE email = 'admin@smkalluthfah.sch.id'", (err, row) => {
+    db.get("SELECT * FROM guru WHERE email = 'admin@smkalluthfah.sch.id'", (err, row) => {
       if (!err && !row) {
-        bcrypt.hash('admin123', 12, (err, hash) => { // [REVISI] cost factor 12 (lebih aman dari 10)
+        bcrypt.hash('admin123', 12, (err, hash) => {
           if (err) return;
           db.run(
-            `INSERT INTO mahasiswa (nama, nip, email, password, role, gaji_pokok, tunjangan_hadir,
+            `INSERT INTO guru (nama, nip, email, password, role, gaji_pokok, tunjangan_hadir,
               potongan_telat_sedang, potongan_telat_berat, email_verified)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             ['Administrator', 'admin', 'admin@smkalluthfah.sch.id', hash,
@@ -329,7 +317,6 @@ function initDatabase() {
 
 // ===========================
 // FUNGSI UTILITY: HAVERSINE FORMULA
-// Menghitung jarak dua titik GPS (dalam meter)
 // ===========================
 function hitungJarak(lat1, lon1, lat2, lon2) {
   const R = 6371e3;
@@ -356,40 +343,35 @@ function validasiLokasi(userLat, userLon, officeLat, officeLon, maxRadius) {
 }
 
 // ===========================
-// [REVISI] FUNGSI DETEKSI FAKE GPS (SERVER-SIDE)
-// Menerima sinyal dari client Android dan mengevaluasinya
+// FUNGSI DETEKSI FAKE GPS (SERVER-SIDE)
 // ===========================
 function analisaFakeGPS(payload) {
   const {
-    is_mock_location,       // Boolean: dari location.isFromMockProvider() Android
-    gps_accuracy,           // Float: akurasi GPS dalam meter
-    network_latitude,       // Float: lokasi dari network provider (WiFi/cell)
+    is_mock_location,
+    gps_accuracy,
+    network_latitude,
     network_longitude,
-    latitude,               // Float: lokasi GPS utama
+    latitude,
     longitude,
-    previous_latitude,      // Float: koordinat sebelumnya (untuk cek velocity)
+    previous_latitude,
     previous_longitude,
-    previous_timestamp,     // Timestamp presensi sebelumnya
-    developer_options_on    // Boolean: apakah developer options aktif
+    previous_timestamp,
+    developer_options_on
   } = payload;
 
   const warnings = [];
   let is_suspected = false;
 
-  // Cek 1: Mock provider flag dari Android API
   if (is_mock_location === true || is_mock_location === 1) {
     warnings.push('Mock location provider terdeteksi di perangkat');
     is_suspected = true;
   }
 
-  // Cek 2: Developer options aktif (bisa set mock location)
   if (developer_options_on === true || developer_options_on === 1) {
     warnings.push('Android Developer Options aktif');
     is_suspected = true;
   }
 
-  // Cek 3: Akurasi GPS tidak wajar
-  // Akurasi terlalu sempurna (< 3m) atau terlalu buruk (> 50m) curigakan
   if (gps_accuracy !== undefined && gps_accuracy !== null) {
     if (gps_accuracy < 3) {
       warnings.push(`Akurasi GPS terlalu sempurna (${gps_accuracy}m) - kemungkinan fake GPS`);
@@ -401,23 +383,20 @@ function analisaFakeGPS(payload) {
     }
   }
 
-  // Cek 4: Cross-check GPS vs Network location (jika tersedia)
   if (network_latitude && network_longitude) {
     const selisihNetwork = hitungJarak(latitude, longitude, network_latitude, network_longitude);
-    if (selisihNetwork > 500) { // Selisih > 500m antara GPS dan network location mencurigakan
+    if (selisihNetwork > 500) {
       warnings.push(`GPS (${latitude},${longitude}) dan Network location (${network_latitude},${network_longitude}) berbeda ${Math.round(selisihNetwork)}m`);
       is_suspected = true;
     }
   }
 
-  // Cek 5: Velocity check - apakah perpindahan dari koordinat sebelumnya masuk akal?
   if (previous_latitude && previous_longitude && previous_timestamp) {
     const jarakDariSebelumnya = hitungJarak(latitude, longitude, previous_latitude, previous_longitude);
     const selisihWaktuDetik = (Date.now() - new Date(previous_timestamp).getTime()) / 1000;
     if (selisihWaktuDetik > 0) {
       const kecepatanMperDetik = jarakDariSebelumnya / selisihWaktuDetik;
       const kecepatanKmJam = kecepatanMperDetik * 3.6;
-      // Kecepatan manusia normal max ~30 km/jam (lari). Lebih dari itu mencurigakan.
       if (kecepatanKmJam > 30 && jarakDariSebelumnya > 100) {
         warnings.push(`Perpindahan tidak wajar: ${Math.round(jarakDariSebelumnya)}m dalam ${Math.round(selisihWaktuDetik)}s (${Math.round(kecepatanKmJam)} km/jam)`);
         is_suspected = true;
@@ -470,50 +449,48 @@ function prosesKeterlambatan(jamSeharusnya, jamAktual) {
 // ===========================
 // FUNGSI CEK ABSEN HARI INI
 // ===========================
-function cekAbsenHariIni(mahasiswaId, callback) {
+function cekAbsenHariIni(guruId, callback) {
   const today = new Date().toISOString().split('T')[0];
   db.get(
-    `SELECT * FROM absensi WHERE mahasiswa_id = ? AND DATE(tanggal) = DATE(?) ORDER BY id DESC LIMIT 1`,
-    [mahasiswaId, today],
+    `SELECT * FROM absensi WHERE guru_id = ? AND DATE(tanggal) = DATE(?) ORDER BY id DESC LIMIT 1`,
+    [guruId, today],
     callback
   );
 }
 
 // ===========================
 // FUNGSI HITUNG TUNJANGAN BULANAN
-// [REVISI] Alfa kini menggunakan config potongan_alpa dari database
 // ===========================
 function getNamaBulan(bulan) {
   return ['Januari','Februari','Maret','April','Mei','Juni',
           'Juli','Agustus','September','Oktober','November','Desember'][bulan - 1];
 }
 
-function hitungTunjanganBulanan(mahasiswaId, bulan, tahun, callback) {
+function hitungTunjanganBulanan(guruId, bulan, tahun, callback) {
   const startDate = `${tahun}-${String(bulan).padStart(2, '0')}-01`;
   const endDate   = `${tahun}-${String(bulan).padStart(2, '0')}-31`;
 
-  db.get('SELECT * FROM mahasiswa WHERE id = ?', [mahasiswaId], (err, mahasiswa) => {
-    if (err || !mahasiswa) return callback(err || new Error('Mahasiswa tidak ditemukan'));
+  db.get('SELECT * FROM guru WHERE id = ?', [guruId], (err, guru) => {
+    if (err || !guru) return callback(err || new Error('Guru tidak ditemukan'));
 
-    const tunjanganHadirPerHari     = mahasiswa.tunjangan_hadir       || 50000;
-    const potonganTelatSedangPerHari = mahasiswa.potongan_telat_sedang || 25000;
-    const potonganTelatBeratPerHari  = mahasiswa.potongan_telat_berat  || 50000;
-    const gajiPokok                  = mahasiswa.gaji_pokok            || 5690752;
+    const tunjanganHadirPerHari      = guru.tunjangan_hadir       || 50000;
+    const potonganTelatSedangPerHari = guru.potongan_telat_sedang || 25000;
+    const potonganTelatBeratPerHari  = guru.potongan_telat_berat  || 50000;
+    const gajiPokok                  = guru.gaji_pokok            || 5690752;
 
-    // Ambil potongan alfa dari konfigurasi
     db.get("SELECT nilai FROM konfigurasi WHERE nama = 'potongan_alpa'", (err, configAlpa) => {
       const potonganAlpaPerHari = configAlpa ? parseInt(configAlpa.nilai) : 100000;
 
       db.all(
-        `SELECT * FROM absensi WHERE mahasiswa_id = ? AND DATE(tanggal) BETWEEN ? AND ?`,
-        [mahasiswaId, startDate, endDate],
+        `SELECT * FROM absensi WHERE guru_id = ? AND DATE(tanggal) BETWEEN ? AND ?`,
+        [guruId, startDate, endDate],
         (err, absensiData) => {
           if (err) return callback(err);
 
           db.all(
-            `SELECT * FROM pengajuan WHERE mahasiswa_id = ? AND status = 'disetujui'
+            `SELECT * FROM pengajuan WHERE guru_id = ? AND status = 'disetujui'
              AND tanggal_mulai BETWEEN ? AND ?`,
-            [mahasiswaId, startDate, endDate],
+            [guruId, startDate, endDate],
             (err, pengajuanData) => {
               if (err) return callback(err);
 
@@ -527,13 +504,12 @@ function hitungTunjanganBulanan(mahasiswaId, bulan, tahun, callback) {
               const totalSakit  = pengajuanData.filter(p => p.jenis === 'sakit').length;
               const totalDinas  = pengajuanData.filter(p => p.jenis === 'dinas').length;
 
-              // [REVISI] Alfa = hari kerja - semua hari yang tercatat (hadir + izin + sakit + dinas)
               const totalAlpa = Math.max(0, totalHariKerja - totalHadir - totalIzin - totalSakit - totalDinas);
 
               const tunjanganHadir      = tepatWaktu * tunjanganHadirPerHari;
               const potonganTelatSedang = telatSedang * potonganTelatSedangPerHari;
               const potonganTelatBerat  = telatBerat  * potonganTelatBeratPerHari;
-              const potonganAlpa        = totalAlpa   * potonganAlpaPerHari; // [REVISI] dari config
+              const potonganAlpa        = totalAlpa   * potonganAlpaPerHari;
 
               const totalTunjangan = tunjanganHadir;
               const totalPotongan  = potonganTelatSedang + potonganTelatBerat + potonganAlpa;
@@ -553,7 +529,7 @@ function hitungTunjanganBulanan(mahasiswaId, bulan, tahun, callback) {
                   izin:   totalIzin,
                   sakit:  totalSakit,
                   dinas:  totalDinas,
-                  alpa:   totalAlpa    // hari tidak hadir tanpa keterangan
+                  alpa:   totalAlpa
                 },
                 tunjangan: {
                   tunjangan_hadir: tunjanganHadir,
@@ -607,13 +583,13 @@ function verifyAdmin(req, res, next) {
 // ===========================
 // FUNGSI CATAT SECURITY LOG
 // ===========================
-function catatSecurityLog(mahasiswaId, eventType, detail, req) {
+function catatSecurityLog(guruId, eventType, detail, req) {
   const ip       = req ? (req.ip || req.connection.remoteAddress) : null;
   const deviceId = req ? req.body.device_id : null;
   db.run(
-    `INSERT INTO security_log (mahasiswa_id, event_type, detail, ip_address, device_id)
+    `INSERT INTO security_log (guru_id, event_type, detail, ip_address, device_id)
      VALUES (?, ?, ?, ?, ?)`,
-    [mahasiswaId, eventType, detail, ip, deviceId]
+    [guruId, eventType, detail, ip, deviceId]
   );
 }
 
@@ -622,8 +598,7 @@ function catatSecurityLog(mahasiswaId, eventType, detail, req) {
 // ============================================================
 
 // ------------------------------------------
-// [REVISI] POST /register
-// Admin mendaftarkan guru baru dengan email
+// POST /register
 // ------------------------------------------
 app.post('/register', async (req, res) => {
   const { nama, nip, email, password } = req.body;
@@ -632,16 +607,15 @@ app.post('/register', async (req, res) => {
     return res.status(400).json({ message: 'Nama, email, dan password harus diisi' });
   }
 
-  // Validasi format email
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   if (!emailRegex.test(email)) {
     return res.status(400).json({ message: 'Format email tidak valid' });
   }
 
   try {
-    const hashedPassword = await bcrypt.hash(password, 12); // [REVISI] cost factor 12
+    const hashedPassword = await bcrypt.hash(password, 12);
     db.run(
-      'INSERT INTO mahasiswa (nama, nip, email, password) VALUES (?, ?, ?, ?)',
+      'INSERT INTO guru (nama, nip, email, password) VALUES (?, ?, ?, ?)',
       [nama, nip || null, email, hashedPassword],
       function(err) {
         if (err) {
@@ -662,10 +636,7 @@ app.post('/register', async (req, res) => {
 });
 
 // ------------------------------------------
-// [REVISI] POST /login
-// Login menggunakan EMAIL (bukan NIP lagi)
-// + rate limiting untuk mencegah brute force
-// + device binding: catat device_id saat login
+// POST /login
 // ------------------------------------------
 app.post('/login', checkLoginRateLimit, (req, res) => {
   const { email, password, device_id } = req.body;
@@ -675,7 +646,7 @@ app.post('/login', checkLoginRateLimit, (req, res) => {
     return res.status(400).json({ message: 'Email dan password harus diisi' });
   }
 
-  db.get('SELECT * FROM mahasiswa WHERE email = ?', [email], async (err, user) => {
+  db.get('SELECT * FROM guru WHERE email = ?', [email], async (err, user) => {
     if (err) return res.status(500).json({ message: 'Error server' });
 
     if (!user) {
@@ -692,7 +663,6 @@ app.post('/login', checkLoginRateLimit, (req, res) => {
 
     recordLoginSuccess(ip);
 
-    // [REVISI] Device binding: peringatan jika login dari device berbeda
     let device_warning = null;
     if (device_id && user.device_id && user.device_id !== device_id) {
       device_warning = 'Peringatan: Login dari perangkat baru terdeteksi.';
@@ -700,14 +670,13 @@ app.post('/login', checkLoginRateLimit, (req, res) => {
         `Login dari device baru: ${device_id} (sebelumnya: ${user.device_id})`, req);
     }
 
-    // Update device_id dan last_login
     db.run(
-      'UPDATE mahasiswa SET device_id = ?, last_login = ? WHERE id = ?',
+      'UPDATE guru SET device_id = ?, last_login = ? WHERE id = ?',
       [device_id || user.device_id, new Date().toISOString(), user.id]
     );
 
     const token = jwt.sign(
-      { id: user.id, email: user.email, role: user.role || 'mahasiswa' },
+      { id: user.id, email: user.email, role: user.role || 'guru' },
       SECRET_KEY,
       { expiresIn: '7d' }
     );
@@ -721,31 +690,28 @@ app.post('/login', checkLoginRateLimit, (req, res) => {
         nama:  user.nama,
         email: user.email,
         nip:   user.nip,
-        role:  user.role || 'mahasiswa'
+        role:  user.role || 'guru'
       }
     });
   });
 });
 
 // ------------------------------------------
-// GET /cek-absen-hari-ini/:mahasiswa_id
+// GET /cek-absen-hari-ini/:guru_id
 // ------------------------------------------
-app.get('/cek-absen-hari-ini/:mahasiswa_id', verifyToken, (req, res) => {
-  cekAbsenHariIni(req.params.mahasiswa_id, (err, row) => {
+app.get('/cek-absen-hari-ini/:guru_id', verifyToken, (req, res) => {
+  cekAbsenHariIni(req.params.guru_id, (err, row) => {
     if (err) return res.status(500).json({ message: 'Error cek absen' });
     res.json({ message: 'Berhasil cek absen hari ini', sudah_absen: !!row, data: row || null });
   });
 });
 
 // ------------------------------------------
-// [REVISI] POST /presensi
-// + Validasi fake GPS (terima flag dari client Android)
-// + Simpan data device_id, gps_accuracy, is_mock_location
-// + Log ke security_log jika fake GPS terdeteksi
+// POST /presensi
 // ------------------------------------------
 app.post('/presensi', verifyToken, (req, res) => {
   const {
-    mahasiswa_id,
+    guru_id,
     jam_seharusnya,
     jam_masuk_aktual,
     latitude,
@@ -759,15 +725,14 @@ app.post('/presensi', verifyToken, (req, res) => {
     previous_longitude,
     previous_timestamp,
     device_id,
-    sync_status           // 'online' atau 'offline_sync'
+    sync_status
   } = req.body;
 
-  if (!mahasiswa_id || !jam_masuk_aktual || latitude === undefined || longitude === undefined) {
+  if (!guru_id || !jam_masuk_aktual || latitude === undefined || longitude === undefined) {
     return res.status(400).json({ message: 'Data tidak lengkap' });
   }
 
-  // Cek sudah absen hari ini
-  cekAbsenHariIni(mahasiswa_id, (err, existingAbsen) => {
+  cekAbsenHariIni(guru_id, (err, existingAbsen) => {
     if (err) return res.status(500).json({ message: 'Error cek absen' });
     if (existingAbsen) {
       return res.status(400).json({
@@ -785,20 +750,17 @@ app.post('/presensi', verifyToken, (req, res) => {
       const jamSeharusnya = jam_seharusnya || config.jam_masuk_default || '08:00';
       const officeLat     = parseFloat(config.kantor_latitude  || -6.360427);
       const officeLon     = parseFloat(config.kantor_longitude || 107.095709);
-      const maxRadius     = parseFloat(config.radius_maksimal  || 100); // [REVISI] default 100m
-      const maxAccuracy   = parseFloat(config.max_gps_accuracy || 50);
+      const maxRadius     = parseFloat(config.radius_maksimal  || 100);
 
-      // ------ [REVISI] VALIDASI FAKE GPS (SERVER-SIDE) ------
       const fakeGpsCheck = analisaFakeGPS({
         is_mock_location, gps_accuracy, network_latitude, network_longitude,
         latitude, longitude, previous_latitude, previous_longitude,
         previous_timestamp, developer_options_on
       });
 
-      // Jika terdeteksi fake GPS → TOLAK presensi & catat log
       if (fakeGpsCheck.is_suspected) {
         catatSecurityLog(
-          mahasiswa_id,
+          guru_id,
           'FAKE_GPS_DETECTED',
           JSON.stringify({ warnings: fakeGpsCheck.warnings, latitude, longitude }),
           req
@@ -809,7 +771,6 @@ app.post('/presensi', verifyToken, (req, res) => {
         });
       }
 
-      // ------ VALIDASI LOKASI (RADIUS GEOFENCING) ------
       const lokasiCheck = validasiLokasi(latitude, longitude, officeLat, officeLon, maxRadius);
       if (!lokasiCheck.valid) {
         return res.status(400).json({
@@ -821,20 +782,19 @@ app.post('/presensi', verifyToken, (req, res) => {
         });
       }
 
-      // ------ PROSES PRESENSI ------
       const tanggal = new Date().toISOString();
       const hasilKeterlambatan = prosesKeterlambatan(jamSeharusnya, jam_masuk_aktual);
 
       db.run(
         `INSERT INTO absensi (
-          mahasiswa_id, tanggal, jam_seharusnya, jam_masuk_aktual,
+          guru_id, tanggal, jam_seharusnya, jam_masuk_aktual,
           keterlambatan_menit, kategori_keterlambatan, sanksi,
           latitude, longitude, jarak_dari_kantor,
           gps_accuracy, is_mock_location, is_fake_gps_suspected,
           network_latitude, network_longitude, device_id, sync_status
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
-          mahasiswa_id, tanggal,
+          guru_id, tanggal,
           hasilKeterlambatan.jam_seharusnya,
           hasilKeterlambatan.jam_masuk_aktual,
           hasilKeterlambatan.keterlambatan_menit,
@@ -858,7 +818,7 @@ app.post('/presensi', verifyToken, (req, res) => {
             message: 'Presensi berhasil',
             data: {
               id: this.lastID,
-              mahasiswa_id, tanggal,
+              guru_id, tanggal,
               ...hasilKeterlambatan,
               latitude, longitude,
               jarak_dari_kantor: lokasiCheck.jarak,
@@ -872,34 +832,29 @@ app.post('/presensi', verifyToken, (req, res) => {
 });
 
 // ------------------------------------------
-// [REVISI] POST /presensi/sync-offline
-// Sinkronisasi data presensi yang diambil saat offline
-// Client Android mengirim batch data yang tersimpan di local DB
-// Server memvalidasi dan memprosesnya
+// POST /presensi/sync-offline
 // ------------------------------------------
 app.post('/presensi/sync-offline', verifyToken, (req, res) => {
-  const { records } = req.body; // Array data presensi offline
+  const { records } = req.body;
 
   if (!records || !Array.isArray(records) || records.length === 0) {
     return res.status(400).json({ message: 'Tidak ada data untuk disinkronkan' });
   }
 
   db.get("SELECT nilai FROM konfigurasi WHERE nama = 'offline_max_delay'", (err, configRow) => {
-    const maxDelayDetik = configRow ? parseInt(configRow.nilai) : 300; // default 5 menit
+    const maxDelayDetik = configRow ? parseInt(configRow.nilai) : 300;
 
     const results = { berhasil: [], gagal: [] };
     let processed = 0;
 
     records.forEach((record) => {
       const {
-        mahasiswa_id, jam_seharusnya, jam_masuk_aktual,
+        guru_id, jam_seharusnya, jam_masuk_aktual,
         latitude, longitude, gps_accuracy, is_mock_location,
         developer_options_on, network_latitude, network_longitude,
-        device_id, local_timestamp  // Waktu presensi di perangkat (saat offline)
+        device_id, local_timestamp
       } = record;
 
-      // [REVISI] Validasi selisih waktu offline vs server
-      // Tolak jika selisih > maxDelayDetik (data terlalu lama, mungkin dimanipulasi)
       const serverNow = Date.now();
       const localTime = new Date(local_timestamp).getTime();
       const selisihDetik = Math.abs(serverNow - localTime) / 1000;
@@ -916,14 +871,13 @@ app.post('/presensi/sync-offline', verifyToken, (req, res) => {
         return;
       }
 
-      // Cek fake GPS pada data offline juga
       const fakeGpsCheck = analisaFakeGPS({
         is_mock_location, gps_accuracy, network_latitude, network_longitude,
         latitude, longitude, developer_options_on
       });
 
       if (fakeGpsCheck.is_suspected) {
-        catatSecurityLog(mahasiswa_id, 'FAKE_GPS_OFFLINE_SYNC',
+        catatSecurityLog(guru_id, 'FAKE_GPS_OFFLINE_SYNC',
           JSON.stringify({ warnings: fakeGpsCheck.warnings }), req);
         results.gagal.push({ record, alasan: 'Terdeteksi GPS palsu: ' + fakeGpsCheck.warnings.join('; ') });
         processed++;
@@ -933,11 +887,10 @@ app.post('/presensi/sync-offline', verifyToken, (req, res) => {
         return;
       }
 
-      // Cek apakah sudah ada data absen pada tanggal tersebut
       const tanggalRecord = new Date(local_timestamp).toISOString().split('T')[0];
       db.get(
-        `SELECT id FROM absensi WHERE mahasiswa_id = ? AND DATE(tanggal) = ?`,
-        [mahasiswa_id, tanggalRecord],
+        `SELECT id FROM absensi WHERE guru_id = ? AND DATE(tanggal) = ?`,
+        [guru_id, tanggalRecord],
         (err, existing) => {
           if (existing) {
             results.gagal.push({ record, alasan: 'Data presensi untuk tanggal ini sudah ada' });
@@ -959,13 +912,13 @@ app.post('/presensi/sync-offline', verifyToken, (req, res) => {
 
                 db.run(
                   `INSERT INTO absensi (
-                    mahasiswa_id, tanggal, jam_seharusnya, jam_masuk_aktual,
+                    guru_id, tanggal, jam_seharusnya, jam_masuk_aktual,
                     keterlambatan_menit, kategori_keterlambatan, sanksi,
                     latitude, longitude, jarak_dari_kantor,
                     gps_accuracy, is_mock_location, device_id, sync_status
                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
                   [
-                    mahasiswa_id, local_timestamp,
+                    guru_id, local_timestamp,
                     hasil.jam_seharusnya, hasil.jam_masuk_aktual,
                     hasil.keterlambatan_menit, hasil.kategori_keterlambatan, hasil.sanksi,
                     latitude, longitude, lokasiCheck.jarak,
@@ -992,14 +945,14 @@ app.post('/presensi/sync-offline', verifyToken, (req, res) => {
 });
 
 // ------------------------------------------
-// GET /riwayat/:id_mahasiswa
+// GET /riwayat/:guru_id
 // ------------------------------------------
-app.get('/riwayat/:id_mahasiswa', verifyToken, (req, res) => {
+app.get('/riwayat/:guru_id', verifyToken, (req, res) => {
   db.all(
-    `SELECT a.*, m.nama, m.email FROM absensi a
-     JOIN mahasiswa m ON a.mahasiswa_id = m.id
-     WHERE a.mahasiswa_id = ? ORDER BY a.tanggal DESC`,
-    [req.params.id_mahasiswa],
+    `SELECT a.*, g.nama, g.email FROM absensi a
+     JOIN guru g ON a.guru_id = g.id
+     WHERE a.guru_id = ? ORDER BY a.tanggal DESC`,
+    [req.params.guru_id],
     (err, rows) => {
       if (err) return res.status(500).json({ message: 'Error mengambil riwayat' });
       res.json({ message: 'Berhasil mengambil riwayat', data: rows });
@@ -1049,19 +1002,19 @@ app.delete('/kalender/:id', verifyToken, verifyAdmin, (req, res) => {
 // PENGAJUAN (izin/sakit/dinas)
 // ------------------------------------------
 app.post('/pengajuan', verifyToken, upload.single('foto_bukti'), (req, res) => {
-  const { mahasiswa_id, jenis, tanggal_mulai, tanggal_selesai, keterangan } = req.body;
+  const { guru_id, jenis, tanggal_mulai, tanggal_selesai, keterangan } = req.body;
   const foto_bukti = req.file ? `/uploads/pengajuan/${req.file.filename}` : null;
-  if (!mahasiswa_id || !jenis || !tanggal_mulai || !tanggal_selesai)
+  if (!guru_id || !jenis || !tanggal_mulai || !tanggal_selesai)
     return res.status(400).json({ message: 'Data tidak lengkap' });
   db.run(
-    `INSERT INTO pengajuan (mahasiswa_id, jenis, tanggal_mulai, tanggal_selesai, keterangan, foto_bukti)
+    `INSERT INTO pengajuan (guru_id, jenis, tanggal_mulai, tanggal_selesai, keterangan, foto_bukti)
      VALUES (?, ?, ?, ?, ?, ?)`,
-    [mahasiswa_id, jenis, tanggal_mulai, tanggal_selesai, keterangan, foto_bukti],
+    [guru_id, jenis, tanggal_mulai, tanggal_selesai, keterangan, foto_bukti],
     function(err) {
       if (err) return res.status(500).json({ message: 'Error mengajukan' });
       res.status(201).json({
         message: 'Pengajuan berhasil diajukan',
-        data: { id: this.lastID, mahasiswa_id, jenis, tanggal_mulai, tanggal_selesai,
+        data: { id: this.lastID, guru_id, jenis, tanggal_mulai, tanggal_selesai,
                 keterangan, foto_bukti, status: 'pending' }
       });
     }
@@ -1069,12 +1022,12 @@ app.post('/pengajuan', verifyToken, upload.single('foto_bukti'), (req, res) => {
 });
 
 app.get('/pengajuan', verifyToken, (req, res) => {
-  const { mahasiswa_id, status } = req.query;
-  let query = `SELECT p.*, m.nama, m.email FROM pengajuan p JOIN mahasiswa m ON p.mahasiswa_id = m.id`;
+  const { guru_id, status } = req.query;
+  let query = `SELECT p.*, g.nama, g.email FROM pengajuan p JOIN guru g ON p.guru_id = g.id`;
   const params = [];
   const conditions = [];
-  if (mahasiswa_id) { conditions.push('p.mahasiswa_id = ?'); params.push(mahasiswa_id); }
-  if (status)        { conditions.push('p.status = ?');       params.push(status); }
+  if (guru_id) { conditions.push('p.guru_id = ?'); params.push(guru_id); }
+  if (status)  { conditions.push('p.status = ?');  params.push(status); }
   if (conditions.length > 0) query += ' WHERE ' + conditions.join(' AND ');
   query += ' ORDER BY p.created_at DESC';
   db.all(query, params, (err, rows) => {
@@ -1100,17 +1053,17 @@ app.put('/pengajuan/:id/proses', verifyToken, verifyAdmin, (req, res) => {
 // ------------------------------------------
 // TUNJANGAN
 // ------------------------------------------
-app.get('/tunjangan/:mahasiswa_id', verifyToken, (req, res) => {
+app.get('/tunjangan/:guru_id', verifyToken, (req, res) => {
   const now = new Date();
   const targetBulan = req.query.bulan ? parseInt(req.query.bulan) : now.getMonth() + 1;
   const targetTahun = req.query.tahun ? parseInt(req.query.tahun) : now.getFullYear();
-  hitungTunjanganBulanan(req.params.mahasiswa_id, targetBulan, targetTahun, (err, result) => {
+  hitungTunjanganBulanan(req.params.guru_id, targetBulan, targetTahun, (err, result) => {
     if (err) return res.status(500).json({ message: err.message });
     res.json({ message: 'Berhasil menghitung tunjangan', data: result });
   });
 });
 
-app.get('/tunjangan/:mahasiswa_id/ringkasan', verifyToken, (req, res) => {
+app.get('/tunjangan/:guru_id/ringkasan', verifyToken, (req, res) => {
   const now = new Date();
   const bulanIni = now.getMonth() + 1;
   const tahunIni = now.getFullYear();
@@ -1120,7 +1073,7 @@ app.get('/tunjangan/:mahasiswa_id/ringkasan', verifyToken, (req, res) => {
     let tahun = tahunIni;
     if (bulan <= 0) { bulan += 12; tahun -= 1; }
     promises.push(new Promise((resolve, reject) => {
-      hitungTunjanganBulanan(req.params.mahasiswa_id, bulan, tahun, (err, result) => {
+      hitungTunjanganBulanan(req.params.guru_id, bulan, tahun, (err, result) => {
         if (err) reject(err); else resolve(result);
       });
     }));
@@ -1146,7 +1099,7 @@ app.put('/konfigurasi', verifyToken, verifyAdmin, (req, res) => {
   const allowedKeys = [
     'jam_masuk_default', 'kantor_latitude', 'kantor_longitude',
     'kantor_nama', 'radius_maksimal',
-    'potongan_alpa', 'max_gps_accuracy', 'offline_max_delay' // [REVISI] tambah config baru
+    'potongan_alpa', 'max_gps_accuracy', 'offline_max_delay'
   ];
   const updates = req.body;
   const validUpdates = Object.keys(updates).filter(key => allowedKeys.includes(key));
@@ -1174,7 +1127,7 @@ app.get('/admin/dashboard', verifyToken, verifyAdmin, (req, res) => {
   const today     = new Date().toISOString().split('T')[0];
   const thisMonth = new Date().toISOString().slice(0, 7);
 
-  db.get('SELECT COUNT(*) as total FROM mahasiswa WHERE role = "mahasiswa"', [], (err, totalGuru) => {
+  db.get('SELECT COUNT(*) as total FROM guru WHERE role = "guru"', [], (err, totalGuru) => {
     if (err) return res.status(500).json({ message: 'Error' });
     db.get('SELECT COUNT(*) as total FROM absensi WHERE DATE(tanggal) = ?', [today], (err, absenHariIni) => {
       if (err) return res.status(500).json({ message: 'Error' });
@@ -1183,7 +1136,6 @@ app.get('/admin/dashboard', verifyToken, verifyAdmin, (req, res) => {
         db.get(`SELECT COUNT(*) as total FROM absensi WHERE strftime('%Y-%m', tanggal) = ? AND keterlambatan_menit > 0`,
           [thisMonth], (err, telatBulanIni) => {
             if (err) return res.status(500).json({ message: 'Error' });
-            // [REVISI] Tambah: jumlah suspicious GPS hari ini
             db.get('SELECT COUNT(*) as total FROM security_log WHERE DATE(created_at) = ? AND event_type LIKE "FAKE_GPS%"',
               [today], (err, suspiciousToday) => {
                 res.json({
@@ -1193,7 +1145,7 @@ app.get('/admin/dashboard', verifyToken, verifyAdmin, (req, res) => {
                     absen_hari_ini:     absenHariIni.total,
                     pengajuan_pending:  pengajuanPending.total,
                     telat_bulan_ini:    telatBulanIni.total,
-                    suspicious_gps_hari_ini: suspiciousToday ? suspiciousToday.total : 0 // [REVISI]
+                    suspicious_gps_hari_ini: suspiciousToday ? suspiciousToday.total : 0
                   }
                 });
               });
@@ -1209,14 +1161,14 @@ app.get('/admin/dashboard', verifyToken, verifyAdmin, (req, res) => {
 app.get('/admin/guru', verifyToken, verifyAdmin, (req, res) => {
   db.all(`SELECT id, nama, nip, email, role, gaji_pokok, tunjangan_hadir,
           potongan_telat_sedang, potongan_telat_berat, last_login, created_at
-          FROM mahasiswa WHERE role = "mahasiswa" ORDER BY nama ASC`, [], (err, rows) => {
+          FROM guru WHERE role = "guru" ORDER BY nama ASC`, [], (err, rows) => {
     if (err) return res.status(500).json({ message: 'Error mengambil data guru' });
     res.json({ message: 'Daftar guru', data: rows });
   });
 });
 
 app.get('/admin/guru/:id', verifyToken, verifyAdmin, (req, res) => {
-  db.get('SELECT * FROM mahasiswa WHERE id = ?', [req.params.id], (err, guru) => {
+  db.get('SELECT * FROM guru WHERE id = ?', [req.params.id], (err, guru) => {
     if (err) return res.status(500).json({ message: 'Error' });
     if (!guru) return res.status(404).json({ message: 'Guru tidak ditemukan' });
     res.json({ message: 'Detail guru', data: guru });
@@ -1227,7 +1179,7 @@ app.put('/admin/guru/:id', verifyToken, verifyAdmin, (req, res) => {
   const { id } = req.params;
   const { nama, nip, email, gaji_pokok, tunjangan_hadir, potongan_telat_sedang, potongan_telat_berat } = req.body;
   db.run(
-    `UPDATE mahasiswa SET nama = ?, nip = ?, email = ?, gaji_pokok = ?,
+    `UPDATE guru SET nama = ?, nip = ?, email = ?, gaji_pokok = ?,
      tunjangan_hadir = ?, potongan_telat_sedang = ?, potongan_telat_berat = ? WHERE id = ?`,
     [nama, nip, email, gaji_pokok, tunjangan_hadir, potongan_telat_sedang, potongan_telat_berat, id],
     function(err) {
@@ -1243,11 +1195,11 @@ app.put('/admin/guru/:id', verifyToken, verifyAdmin, (req, res) => {
 
 app.delete('/admin/guru/:id', verifyToken, verifyAdmin, (req, res) => {
   const { id } = req.params;
-  db.run('DELETE FROM absensi WHERE mahasiswa_id = ?', [id], (err) => {
+  db.run('DELETE FROM absensi WHERE guru_id = ?', [id], (err) => {
     if (err) return res.status(500).json({ message: 'Error' });
-    db.run('DELETE FROM pengajuan WHERE mahasiswa_id = ?', [id], (err) => {
+    db.run('DELETE FROM pengajuan WHERE guru_id = ?', [id], (err) => {
       if (err) return res.status(500).json({ message: 'Error' });
-      db.run('DELETE FROM mahasiswa WHERE id = ?', [id], function(err) {
+      db.run('DELETE FROM guru WHERE id = ?', [id], function(err) {
         if (err) return res.status(500).json({ message: 'Error hapus guru' });
         res.json({ message: 'Guru berhasil dihapus' });
       });
@@ -1259,15 +1211,14 @@ app.post('/admin/create-guru', verifyToken, verifyAdmin, async (req, res) => {
   const { nama, nip, email, password, gaji_pokok, tunjangan_hadir } = req.body;
   if (!nama || !email || !password)
     return res.status(400).json({ message: 'Nama, email, dan password harus diisi' });
-  // [REVISI] Validasi format email
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   if (!emailRegex.test(email))
     return res.status(400).json({ message: 'Format email tidak valid' });
   try {
-    const hashedPassword = await bcrypt.hash(password, 12); // [REVISI] cost factor 12
+    const hashedPassword = await bcrypt.hash(password, 12);
     db.run(
-      `INSERT INTO mahasiswa (nama, nip, email, password, role, gaji_pokok, tunjangan_hadir)
-       VALUES (?, ?, ?, ?, 'mahasiswa', ?, ?)`,
+      `INSERT INTO guru (nama, nip, email, password, role, gaji_pokok, tunjangan_hadir)
+       VALUES (?, ?, ?, ?, 'guru', ?, ?)`,
       [nama, nip || null, email, hashedPassword, gaji_pokok || 5690752, tunjangan_hadir || 50000],
       function(err) {
         if (err) {
@@ -1288,11 +1239,11 @@ app.post('/admin/create-guru', verifyToken, verifyAdmin, async (req, res) => {
 // ADMIN: LAPORAN
 // ------------------------------------------
 app.get('/admin/absensi', verifyToken, verifyAdmin, (req, res) => {
-  const { tanggal, mahasiswa_id } = req.query;
-  let query = `SELECT a.*, m.nama, m.email FROM absensi a JOIN mahasiswa m ON a.mahasiswa_id = m.id WHERE 1=1`;
+  const { tanggal, guru_id } = req.query;
+  let query = `SELECT a.*, g.nama, g.email FROM absensi a JOIN guru g ON a.guru_id = g.id WHERE 1=1`;
   const params = [];
-  if (tanggal)       { query += ' AND DATE(a.tanggal) = ?'; params.push(tanggal); }
-  if (mahasiswa_id)  { query += ' AND a.mahasiswa_id = ?';  params.push(mahasiswa_id); }
+  if (tanggal) { query += ' AND DATE(a.tanggal) = ?'; params.push(tanggal); }
+  if (guru_id) { query += ' AND a.guru_id = ?';       params.push(guru_id); }
   query += ' ORDER BY a.tanggal DESC LIMIT 100';
   db.all(query, params, (err, rows) => {
     if (err) return res.status(500).json({ message: 'Error' });
@@ -1307,17 +1258,17 @@ app.get('/admin/laporan/kehadiran', verifyToken, verifyAdmin, (req, res) => {
   const startDate = `${targetTahun}-${String(targetBulan).padStart(2, '0')}-01`;
   const endDate   = `${targetTahun}-${String(targetBulan).padStart(2, '0')}-31`;
 
-  db.all(`SELECT m.id, m.nama, m.email, m.nip,
+  db.all(`SELECT g.id, g.nama, g.email, g.nip,
             COUNT(a.id) as total_hadir,
             SUM(CASE WHEN a.kategori_keterlambatan = 'Tepat Waktu' THEN 1 ELSE 0 END) as tepat_waktu,
             SUM(CASE WHEN a.kategori_keterlambatan = 'Telat Ringan' THEN 1 ELSE 0 END) as telat_ringan,
             SUM(CASE WHEN a.kategori_keterlambatan = 'Telat Sedang' THEN 1 ELSE 0 END) as telat_sedang,
             SUM(CASE WHEN a.kategori_keterlambatan = 'Telat Berat'  THEN 1 ELSE 0 END) as telat_berat
-          FROM mahasiswa m
-          LEFT JOIN absensi a ON m.id = a.mahasiswa_id AND DATE(a.tanggal) BETWEEN ? AND ?
-          WHERE m.role = 'mahasiswa'
-          GROUP BY m.id, m.nama, m.email, m.nip
-          ORDER BY m.nama`, [startDate, endDate], (err, rows) => {
+          FROM guru g
+          LEFT JOIN absensi a ON g.id = a.guru_id AND DATE(a.tanggal) BETWEEN ? AND ?
+          WHERE g.role = 'guru'
+          GROUP BY g.id, g.nama, g.email, g.nip
+          ORDER BY g.nama`, [startDate, endDate], (err, rows) => {
     if (err) return res.status(500).json({ message: 'Error' });
     res.json({ message: 'Laporan kehadiran',
       periode: `${getNamaBulan(targetBulan)} ${targetTahun}`, data: rows });
@@ -1325,8 +1276,8 @@ app.get('/admin/laporan/kehadiran', verifyToken, verifyAdmin, (req, res) => {
 });
 
 app.get('/admin/pengajuan/pending', verifyToken, verifyAdmin, (req, res) => {
-  db.all(`SELECT p.*, m.nama, m.email FROM pengajuan p
-          JOIN mahasiswa m ON p.mahasiswa_id = m.id
+  db.all(`SELECT p.*, g.nama, g.email FROM pengajuan p
+          JOIN guru g ON p.guru_id = g.id
           WHERE p.status = 'pending' ORDER BY p.created_at ASC`, [], (err, rows) => {
     if (err) return res.status(500).json({ message: 'Error' });
     res.json({ message: 'Pengajuan pending', data: rows });
@@ -1334,13 +1285,12 @@ app.get('/admin/pengajuan/pending', verifyToken, verifyAdmin, (req, res) => {
 });
 
 // ------------------------------------------
-// [REVISI] GET /admin/security-log
-// Admin melihat log aktivitas mencurigakan (fake GPS, login dari device baru, dll)
+// GET /admin/security-log
 // ------------------------------------------
 app.get('/admin/security-log', verifyToken, verifyAdmin, (req, res) => {
   const { tanggal, event_type } = req.query;
-  let query = `SELECT sl.*, m.nama, m.email FROM security_log sl
-               LEFT JOIN mahasiswa m ON sl.mahasiswa_id = m.id WHERE 1=1`;
+  let query = `SELECT sl.*, g.nama, g.email FROM security_log sl
+               LEFT JOIN guru g ON sl.guru_id = g.id WHERE 1=1`;
   const params = [];
   if (tanggal)    { query += ' AND DATE(sl.created_at) = ?'; params.push(tanggal); }
   if (event_type) { query += ' AND sl.event_type = ?';       params.push(event_type); }
@@ -1352,18 +1302,18 @@ app.get('/admin/security-log', verifyToken, verifyAdmin, (req, res) => {
 });
 
 // ------------------------------------------
-// DELETE /mahasiswa/:id
+// DELETE /guru/:id
 // ------------------------------------------
-app.delete('/mahasiswa/:id', verifyToken, verifyAdmin, (req, res) => {
+app.delete('/guru/:id', verifyToken, verifyAdmin, (req, res) => {
   const { id } = req.params;
-  db.run('DELETE FROM absensi WHERE mahasiswa_id = ?', [id], (err) => {
+  db.run('DELETE FROM absensi WHERE guru_id = ?', [id], (err) => {
     if (err) return res.status(500).json({ message: 'Gagal menghapus data absensi' });
-    db.run('DELETE FROM pengajuan WHERE mahasiswa_id = ?', [id], (err) => {
+    db.run('DELETE FROM pengajuan WHERE guru_id = ?', [id], (err) => {
       if (err) return res.status(500).json({ message: 'Gagal menghapus data pengajuan' });
-      db.run('DELETE FROM mahasiswa WHERE id = ?', [id], function(err) {
+      db.run('DELETE FROM guru WHERE id = ?', [id], function(err) {
         if (err) return res.status(500).json({ message: 'Gagal menghapus akun' });
         if (this.changes === 0) return res.status(404).json({ message: 'Akun tidak ditemukan' });
-        res.json({ message: `Akun mahasiswa dengan ID ${id} berhasil dihapus` });
+        res.json({ message: `Akun guru dengan ID ${id} berhasil dihapus` });
       });
     });
   });
