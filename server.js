@@ -103,6 +103,36 @@ const db = new sqlite3.Database('./absensi.db', (err) => {
   }
 });
 
+
+// ===========================
+// FUNGSI GENERATE NIP OTOMATIS
+// Format: GTH + tahun (4 digit) + nomor urut (4 digit)
+// Contoh: GTH20240001
+// ===========================
+function generateNIP(callback) {
+  const tahun = new Date().getFullYear();
+  const prefix = `${tahun}`;
+
+  // Cari NIP terakhir dengan prefix tahun yang sama
+  db.get(
+    `SELECT nip FROM guru WHERE nip LIKE ? ORDER BY nip DESC LIMIT 1`,
+    [`${prefix}%`],
+    (err, row) => {
+      if (err || !row) {
+        // Belum ada NIP tahun ini, mulai dari 0001
+        callback(null, `${prefix}0001`);
+      } else {
+        // Ambil nomor urut terakhir dan increment
+        const lastNip = row.nip;
+        const lastNumber = parseInt(lastNip.replace(prefix, ''), 10);
+        const nextNumber = lastNumber + 1;
+        const newNip = `${prefix}${String(nextNumber).padStart(4, '0')}`;
+        callback(null, newNip);
+      }
+    }
+  );
+}
+
 // ===========================
 // INISIALISASI DATABASE
 // ===========================
@@ -1208,7 +1238,7 @@ app.delete('/admin/guru/:id', verifyToken, verifyAdmin, (req, res) => {
 });
 
 app.post('/admin/create-guru', verifyToken, verifyAdmin, async (req, res) => {
-  const { nama, nip, email, password, gaji_pokok, tunjangan_hadir } = req.body;
+  const { nama, email, password, gaji_pokok, tunjangan_hadir } = req.body;
   if (!nama || !email || !password)
     return res.status(400).json({ message: 'Nama, email, dan password harus diisi' });
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -1216,20 +1246,28 @@ app.post('/admin/create-guru', verifyToken, verifyAdmin, async (req, res) => {
     return res.status(400).json({ message: 'Format email tidak valid' });
   try {
     const hashedPassword = await bcrypt.hash(password, 12);
-    db.run(
-      `INSERT INTO guru (nama, nip, email, password, role, gaji_pokok, tunjangan_hadir)
-       VALUES (?, ?, ?, ?, 'guru', ?, ?)`,
-      [nama, nip || null, email, hashedPassword, gaji_pokok || 5690752, tunjangan_hadir || 50000],
-      function(err) {
-        if (err) {
-          if (err.message.includes('UNIQUE constraint failed'))
-            return res.status(400).json({ message: 'Email sudah terdaftar' });
-          return res.status(500).json({ message: 'Error membuat akun' });
+
+    // Generate NIP otomatis
+    generateNIP((err, nip) => {
+      if (err) return res.status(500).json({ message: 'Error generate NIP' });
+
+      db.run(
+        `INSERT INTO guru (nama, nip, email, password, role, gaji_pokok, tunjangan_hadir)
+         VALUES (?, ?, ?, ?, 'guru', ?, ?)`,
+        [nama, nip, email, hashedPassword, gaji_pokok || 5690752, tunjangan_hadir || 50000],
+        function(err) {
+          if (err) {
+            if (err.message.includes('UNIQUE constraint failed'))
+              return res.status(400).json({ message: 'Email sudah terdaftar' });
+            return res.status(500).json({ message: 'Error membuat akun' });
+          }
+          res.status(201).json({
+            message: 'Akun guru berhasil dibuat',
+            data: { id: this.lastID, nama, email, nip }
+          });
         }
-        res.status(201).json({ message: 'Akun guru berhasil dibuat',
-          data: { id: this.lastID, nama, email, nip } });
-      }
-    );
+      );
+    });
   } catch {
     res.status(500).json({ message: 'Error server' });
   }
