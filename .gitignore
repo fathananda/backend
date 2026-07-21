@@ -1,0 +1,5 @@
+node_modules/
+absensi.db
+uploads/
+.env
+npm-debug.log*
