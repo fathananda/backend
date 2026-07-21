@@ -8,15 +8,24 @@ const path = require('path');
 const fs = require('fs');
 
 const app = express();
-const PORT = 3000;
-const SECRET_KEY = 'rahasia_absensi_2024';
+const PORT = process.env.PORT || 3000;
+const SECRET_KEY = process.env.JWT_SECRET || 'rahasia_absensi_2024';
+
+// Folder untuk data persisten. Kalau di Railway sudah pasang Volume,
+// Railway otomatis set RAILWAY_VOLUME_MOUNT_PATH ke path volume tsb.
+// Kalau belum ada volume (misal jalan di lokal), fallback ke folder project.
+const DATA_DIR = process.env.RAILWAY_VOLUME_MOUNT_PATH || '.';
+const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
+if (!fs.existsSync(UPLOADS_DIR)) {
+  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+}
 
 // ===========================
 // MIDDLEWARE
 // ===========================
 app.use(cors());
 app.use(express.json());
-app.use('/uploads', express.static('uploads'));
+app.use('/uploads', express.static(UPLOADS_DIR));
 
 // ===========================
 // RATE LIMITER - Mencegah brute force attack pada endpoint login
@@ -66,7 +75,7 @@ function recordLoginSuccess(ip) {
 // ===========================
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    const dir = './uploads/pengajuan';
+    const dir = path.join(UPLOADS_DIR, 'pengajuan');
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
     }
@@ -94,7 +103,8 @@ const upload = multer({
 // ===========================
 // DATABASE SETUP
 // ===========================
-const db = new sqlite3.Database('./absensi.db', (err) => {
+const DB_PATH = path.join(DATA_DIR, 'absensi.db');
+const db = new sqlite3.Database(DB_PATH, (err) => {
   if (err) {
     console.error('Error opening database:', err);
   } else {
